@@ -12,7 +12,7 @@ const PinnedClockWidget: React.FC = () => {
         const sync = () => {
             const settings = storageService.getSettings();
             const pinned = settings.clocks?.find(c => c.isPinned) || null;
-            if (pinned?.isRunning) stopAlarm();
+            // ELIMINADO: stopAlarm() aquí causaba AbortError cada 100ms
             setPinnedClock(pinned);
         };
         sync();
@@ -62,12 +62,17 @@ const PinnedClockWidget: React.FC = () => {
             let rawPath = alarmUrl.replace(/^file:\/+/i, '');
             const cleanPath = rawPath.replace(/\\/g, '/');
             const url = `mico-media:///${cleanPath}`;
-            console.warn('MICO_AUDIO: Reproduciendo alarma ->', url);
+            
             const audio = new Audio(url);
+            audio.loop = true; // Alarmas infinitas hasta que se detengan
             audioRef.current = audio;
-            audio.play()
-                .then(() => console.log('MICO_AUDIO: ✅ OK'))
-                .catch(e => console.error('MICO_AUDIO: ❌', e));
+            
+            // Usar promesa para evitar AbortError si se pausa rápido
+            audio.play().catch(e => {
+                if (e.name !== 'AbortError') {
+                    console.error('MICO_AUDIO: ❌ Error real:', e);
+                }
+            });
         } catch (e) { console.error('Alarm error', e); }
     };
 
