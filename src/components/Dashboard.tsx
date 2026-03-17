@@ -11,7 +11,8 @@ import {
     Send,
     Sparkles,
     Zap,
-    User as UserIcon
+    User as UserIcon,
+    Globe
 } from 'lucide-react';
 import mushroom from '../assets/mushroom.png';
 import ProjectsView from './views/ProjectsView';
@@ -24,6 +25,8 @@ import ClocksView from './views/ClocksView';
 import PinnedClockWidget from './PinnedClockWidget';
 import AlarmOverlay from './AlarmOverlay';
 import FloatingClockBubble from './FloatingClockBubble';
+import FloatingPanel from './FloatingPanel';
+import WebView from './views/WebView';
 
 const Dashboard: React.FC = () => {
     // --- UI States ---
@@ -40,6 +43,8 @@ const Dashboard: React.FC = () => {
     const [apiKeyInput, setApiKeyInput] = useState('');
     const [showKeyPrompt, setShowKeyPrompt] = useState(!aiService.isConfigured());
     const [activeBubbles, setActiveBubbles] = useState<string[]>([]);
+    const [webWindows, setWebWindows] = useState<string[]>([]);
+    const [focusedWindow, setFocusedWindow] = useState<string | null>(null);
 
     // --- Bubble Handlers ---
     React.useEffect(() => {
@@ -66,6 +71,7 @@ const Dashboard: React.FC = () => {
         { id: 'terminal', icon: <TerminalIcon className="w-5 h-5" />, label: 'Terminales' },
         { id: 'tasks', icon: <ListTodo className="w-5 h-5" />, label: 'Tareas Pendientes' },
         { id: 'clocks', icon: <div className="p-1 bg-teal-500/10 rounded-lg text-teal-400"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>, label: 'Relojes' },
+        { id: 'web', icon: <Globe className="w-5 h-5" />, label: 'Navegador Web' },
     ];
 
     // --- AI Handlers ---
@@ -115,16 +121,29 @@ const Dashboard: React.FC = () => {
                         {navItems.map((item) => (
                             <button
                                 key={item.id}
-                                onClick={() => setActiveTab(item.id)}
-                                className={`w-full flex items-center p-3 rounded-xl transition-all duration-300 group relative ${activeTab === item.id
+                                onClick={() => {
+                                    if (item.id === 'web') {
+                                        const newWindowId = `web-${Date.now()}`;
+                                        setWebWindows(prev => [...prev, newWindowId]);
+                                        setFocusedWindow(newWindowId);
+                                    } else {
+                                        setActiveTab(item.id);
+                                    }
+                                }}
+                                className={`w-full flex items-center p-3 rounded-xl transition-all duration-300 group relative ${
+                                    (item.id !== 'web' && activeTab === item.id) || (item.id === 'web' && webWindows.length > 0)
                                     ? 'text-white'
                                     : 'text-gray-500 hover:text-gray-300'
                                     }`}
                             >
-                                {activeTab === item.id && (
+                                {((item.id !== 'web' && activeTab === item.id) || (item.id === 'web' && webWindows.length > 0)) && (
                                     <div className="absolute inset-0 bg-white/5 border border-white/10 rounded-xl shadow-[inset_0_0_10px_rgba(255,255,255,0.02)] animate-in fade-in duration-300"></div>
                                 )}
-                                <div className={`flex-shrink-0 relative z-10 transition-colors duration-300 ${activeTab === item.id ? 'text-purple-400' : 'group-hover:text-purple-300'}`}>
+                                <div className={`flex-shrink-0 relative z-10 transition-colors duration-300 ${
+                                    (item.id !== 'web' && activeTab === item.id) || (item.id === 'web' && webWindows.length > 0) 
+                                    ? 'text-purple-400' 
+                                    : 'group-hover:text-purple-300'
+                                }`}>
                                     {item.icon}
                                 </div>
                                 <span className="hidden lg:block ml-4 text-sm font-medium relative z-10 tracking-tight">{item.label}</span>
@@ -188,18 +207,21 @@ const Dashboard: React.FC = () => {
                 </header>
 
                 <div className="flex-1 flex overflow-hidden">
-                    {/* View Port */}
+                    {/* View Port - Área Dinámica (Modificable sin riesgo para el sistema) */}
                     <div className="flex-1 p-8 overflow-y-auto custom-scrollbar relative">
                         <div className="max-w-7xl mx-auto">
-                            {activeTab === 'projects' && (
-                                <ProjectsView onSelectProject={(id) => setSelectedProjectId(id)} />
-                            )}
-                            {activeTab === 'agents' && <AgentsView />}
-                            {activeTab === 'db' && <DatabaseView />}
-                            {activeTab === 'notes' && <NotesView />}
-                            {activeTab === 'terminal' && <TerminalView />}
-                            {activeTab === 'tasks' && <TasksView />}
-                            {activeTab === 'clocks' && <ClocksView />}
+                            {(() => {
+                                switch (activeTab) {
+                                    case 'projects': return <ProjectsView onSelectProject={setSelectedProjectId} />;
+                                    case 'agents': return <AgentsView />;
+                                    case 'db': return <DatabaseView />;
+                                    case 'notes': return <NotesView />;
+                                    case 'terminal': return <TerminalView />;
+                                    case 'tasks': return <TasksView />;
+                                    case 'clocks': return <ClocksView />;
+                                    default: return <ProjectsView onSelectProject={setSelectedProjectId} />;
+                                }
+                            })()}
                         </div>
                     </div>
 
@@ -300,20 +322,41 @@ const Dashboard: React.FC = () => {
                 </div>
             </main>
 
-            <AlarmOverlay 
-                onStop={() => {
-                    console.log("MICO_UI: Alarm Stopped by User");
-                    window.dispatchEvent(new CustomEvent('mico-stop-alarm'));
-                }} 
-            />
-
-            {activeBubbles.map(id => (
-                <FloatingClockBubble 
-                    key={id} 
-                    clockId={id} 
-                    onClose={() => closeBubble(id)} 
+            {/* BLOCK_SYSTEM_CORE: Componentes Críticos del Núcleo (Sin bloqueo de Layout) */}
+            <div className="mico-system-core-container fixed inset-0 z-[1000] pointer-events-none">
+                <AlarmOverlay 
+                    onStop={() => {
+                        console.log("MICO_UI: Alarm Stopped by User");
+                        window.dispatchEvent(new CustomEvent('mico-stop-alarm'));
+                    }} 
                 />
-            ))}
+
+                {webWindows.map((winId, index) => (
+                    <FloatingPanel 
+                        key={winId}
+                        id={winId}
+                        title={`Mico_Browser [Nativo] - ${index + 1}`}
+                        icon={<Globe className="w-3 h-3" />}
+                        zIndex={focusedWindow === winId ? 100 : 50}
+                        onFocus={() => setFocusedWindow(winId)}
+                        onClose={() => setWebWindows(prev => prev.filter(w => w !== winId))}
+                        defaultSize={{ width: 800, height: 600 }}
+                        defaultPosition={{ x: 100 + (index * 30), y: 100 + (index * 30) }}
+                    >
+                        <WebView />
+                    </FloatingPanel>
+                ))}
+
+                {activeBubbles.map(id => (
+                    <FloatingClockBubble 
+                        key={id} 
+                        clockId={id} 
+                        onFocus={() => setFocusedWindow(id)}
+                        zIndex={focusedWindow === id ? 100 : 50}
+                        onClose={() => closeBubble(id)} 
+                    />
+                ))}
+            </div>
 
             <style>{`
                 .custom-scrollbar::-webkit-scrollbar {

@@ -30,6 +30,7 @@
     "electron": "^41.0.2",
     "electron-builder": "^25.1.8",
     "electron-packager": "^17.1.2",
+    "electron-rebuild": "^3.2.9",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",

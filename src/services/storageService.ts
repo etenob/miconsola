@@ -1,12 +1,13 @@
 import type { AIAgent, AIConfig } from "../types/ai";
 import { AGENTS } from "../config/agents";
 
-// Definición de las carpetas locales OS (Módulos)
 const MODULES = {
     AGENTS: 'MisAgentes',
     NOTES: 'MisNotas',
+    TASKS: 'MisTareas',
     CONFIG: 'Config',
 };
+
 
 export type ClockType = 'timer' | 'stopwatch' | 'world_clock' | 'alarm';
 
@@ -37,12 +38,20 @@ export interface MicoNote {
     category?: string;
 }
 
+export interface TaskItem {
+    id: string;
+    text: string;
+    status: 'pending' | 'done';
+    priority: 'low' | 'medium' | 'high' | 'critical';
+}
+
 class PersistentStorageService {
     // Cachés en memoria para respuestas síncronas de React
     private cache = {
         configs: [] as AIConfig[],
         agents: [] as AIAgent[],
         notes: [] as MicoNote[],
+        tasks: [] as TaskItem[],
         settings: { 
             clocks: [
                 {
@@ -138,6 +147,27 @@ class PersistentStorageService {
                 }
             }
 
+            // 3.5 Cargar Tareas
+            const tasksDir = await window.electronAPI.fs.readDir(MODULES.TASKS);
+            if (tasksDir.success && tasksDir.files) {
+                this.cache.tasks = [];
+                for (const file of tasksDir.files) {
+                    if (file.endsWith('.json')) {
+                        const fileRes = await window.electronAPI.fs.readData(MODULES.TASKS, file);
+                        if (fileRes.success && fileRes.content) {
+                            try {
+                                const taskObj = JSON.parse(fileRes.content);
+                                if (taskObj && taskObj.id && !this.cache.tasks.some(t => t.id === taskObj.id)) {
+                                    this.cache.tasks.push(taskObj);
+                                }
+                            } catch (e) {
+                                console.error(`Error parseando tarea ${file}`, e);
+                            }
+                        }
+                    }
+                }
+            }
+
             // 4. MIGRACIÓN TRANSPARENTE DESDE LOCALSTORAGE (Si es la primera vez)
             const legacyAgents = localStorage.getItem('MICO_CUSTOM_AGENTS');
             if (legacyAgents) {
@@ -193,6 +223,7 @@ class PersistentStorageService {
             window.dispatchEvent(new Event('mico-settings-updated'));
             window.dispatchEvent(new Event('mico-configs-updated'));
             window.dispatchEvent(new Event('mico-notes-updated'));
+            window.dispatchEvent(new Event('mico-tasks-updated'));
         } catch (error) {
             console.error("Error inicializando True OS Storage:", error);
             this.initializingPromise = null;
@@ -284,6 +315,30 @@ class PersistentStorageService {
             window.electronAPI.fs.deleteFile(MODULES.NOTES, `${id}.md`);
         }
         window.dispatchEvent(new Event('mico-notes-updated'));
+    }
+
+    // --- Tareas ---
+    getTasks(): TaskItem[] {
+        return Array.isArray(this.cache.tasks) ? [...this.cache.tasks] : [];
+    }
+
+    saveTask(task: TaskItem) {
+        const index = this.cache.tasks.findIndex(t => t.id === task.id);
+        if (index >= 0) this.cache.tasks[index] = task;
+        else this.cache.tasks.unshift(task); // Add to beginning
+
+        if (window.electronAPI) {
+            window.electronAPI.fs.saveData(MODULES.TASKS, `${task.id}.json`, JSON.stringify(task, null, 2));
+        }
+        window.dispatchEvent(new Event('mico-tasks-updated'));
+    }
+
+    deleteTask(id: string) {
+        this.cache.tasks = this.cache.tasks.filter(t => t.id !== id);
+        if (window.electronAPI) {
+            window.electronAPI.fs.deleteFile(MODULES.TASKS, `${id}.json`);
+        }
+        window.dispatchEvent(new Event('mico-tasks-updated'));
     }
 
     // --- Configuraciones Globales ---

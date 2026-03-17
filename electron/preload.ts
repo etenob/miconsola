@@ -20,5 +20,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     ui: {
         selectFile: () => ipcRenderer.invoke('os:selectFile')
+    },
+    sqlite: {
+        query: (sql: string, params: any[] = []) => ipcRenderer.invoke('db:query', sql, params),
+        status: () => ipcRenderer.invoke('db:status')
     }
 })

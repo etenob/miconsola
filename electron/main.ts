@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 import { pathToFileURL } from 'url'
+import Database from 'better-sqlite3'
 
 // Desactiva advertencias de seguridad en desarrollo
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -46,6 +47,7 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: false,
+            webviewTag: true,
             autoplayPolicy: 'no-user-gesture-required' // PERMITIR ALARMAS AUTOMÁTICAS
         }
     })
@@ -53,8 +55,12 @@ function createWindow() {
     mainWindow.on('ready-to-show', () => {
         // Cerramos el splash y mostramos la principal tras un breve delay visual
         setTimeout(() => {
-            splashWindow?.close()
-            mainWindow?.show()
+            if (splashWindow && !splashWindow.isDestroyed()) {
+                splashWindow.close()
+            }
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.show()
+            }
         }, 2500)
     })
 
@@ -147,11 +153,104 @@ function setupProtocols() {
     });
 }
 
+// --- DEFINICIÓN DE MÓDULOS DE ALMACENAMIENTO ---
+const MODULES = {
+    AGENTS: 'MisAgentes',
+    NOTES: 'MisNotas',
+    CONFIG: 'Config',
+    DB: 'Database',
+};
+
+// --- CONFIGURACIÓN DE SQLITE 🗄️ ---
+let db: Database.Database | null = null;
+let dbError: string | null = null;
+
+function setupSQLite() {
+    console.log('MICO_SQLITE: Iniciando motor...');
+    try {
+        const baseDir = path.join(os.homedir(), 'Documents', 'Miconsola_Data');
+        const dbDir = path.join(baseDir, MODULES.DB);
+        
+        if (!fs.existsSync(dbDir)) {
+            fs.mkdirSync(dbDir, { recursive: true });
+        }
+
+        const dbPath = path.join(dbDir, 'mico.db');
+        db = new Database(dbPath);
+        console.log(`MICO_SQLITE: Base de datos abierta en -> ${dbPath}`);
+
+        // Crear esquema inicial y tablas de chat
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS SYSTEM_INFO (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version TEXT,
+                last_connection DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conv_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conv_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+        `);
+
+        // Insertar versión si no existe
+        const info = db.prepare('SELECT id FROM SYSTEM_INFO WHERE id = 1').get();
+        if (!info) {
+            db.prepare('INSERT INTO SYSTEM_INFO (version) VALUES (?)').run('1.0.0-PRO_SQLITE');
+        }
+        dbError = null;
+
+    } catch (err: any) {
+        dbError = err.message;
+        console.error('MICO_SQLITE_FATAL:', err);
+    }
+}
+
+function registerSQLiteHandlers() {
+    // Registrar Handlers de IPC para DB (Siempre registrados)
+    ipcMain.handle('db:query', async (_, sql: string, params: any[] = []) => {
+        if (!db) return { success: false, error: dbError || 'Database not initialized' };
+        try {
+            const stmt = db.prepare(sql);
+            if (sql.trim().toUpperCase().startsWith('SELECT')) {
+                const rows = stmt.all(...params);
+                return { success: true, rows };
+            } else {
+                const info = stmt.run(...params);
+                return { success: true, changes: info.changes };
+            }
+        } catch (err: any) {
+            console.error(`MICO_SQLITE_ERROR: ${err.message}`);
+            return { success: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('db:status', async () => {
+        if (!db) return { connected: false, error: dbError };
+        try {
+            const info: any = db.prepare('SELECT version FROM SYSTEM_INFO WHERE id = 1').get();
+            return { connected: true, version: info.version };
+        } catch (err: any) {
+            return { connected: false, error: err.message };
+        }
+    });
+}
+
 // --- CONFIGURACIÓN DE FILE SYSTEM (TRUE OS STORAGE) ---
 function setupIPC() {
     const baseDir = path.join(os.homedir(), 'Documents', 'Miconsola_Data');
 
-    // Módulos base
+    // Módulo de ayuda para rutas
     const getModulePath = (module: string) => path.join(baseDir, module);
 
     ipcMain.handle('fs:saveData', async (_, module: string, filename: string, content: string) => {
@@ -213,13 +312,15 @@ function setupIPC() {
         });
         if (result.canceled) return null;
         console.log("MICO_OS: File selected ->", result.filePaths[0]);
-        return result.filePaths[0]; // C:\ruta\archivo.mp3
+        return result.filePaths[0];
     });
 }
 
 // -----------------------------------------------------
 
 app.whenReady().then(() => {
+    registerSQLiteHandlers() // Registrar canales IPC siempre
+    setupSQLite() // Intentar abrir DB
     setupProtocols()
     setupIPC()
     createSplashWindow()

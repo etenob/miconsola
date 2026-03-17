@@ -5,9 +5,11 @@ import { storageService, type MicoClock } from '../services/storageService';
 interface FloatingBubbleProps {
     clockId: string;
     onClose: () => void;
+    onFocus?: () => void;
+    zIndex?: number;
 }
 
-const FloatingClockBubble: React.FC<FloatingBubbleProps> = ({ clockId, onClose }) => {
+const FloatingClockBubble: React.FC<FloatingBubbleProps> = ({ clockId, onClose, onFocus, zIndex = 5000 }) => {
     const [clock, setClock] = useState<MicoClock | null>(null);
     const [position, setPosition] = useState({ x: 100, y: 100 });
     const [isDragging, setIsDragging] = useState(false);
@@ -45,6 +47,7 @@ const FloatingClockBubble: React.FC<FloatingBubbleProps> = ({ clockId, onClose }
 
     // Drag and Drop Logic
     const handleMouseDown = (e: React.MouseEvent) => {
+        onFocus?.();
         setIsDragging(true);
         dragRef.current = {
             startX: e.clientX,
@@ -124,8 +127,8 @@ const FloatingClockBubble: React.FC<FloatingBubbleProps> = ({ clockId, onClose }
 
     return (
         <div 
-            className={`fixed z-[5000] group ${isDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
-            style={{ left: position.x, top: position.y }}
+            className={`fixed group ${isDragging ? 'cursor-grabbing select-none' : 'cursor-grab'}`}
+            style={{ left: position.x, top: position.y, zIndex, pointerEvents: 'auto' }}
             onMouseDown={handleMouseDown}
         >
             {/* Glow Aura */}
