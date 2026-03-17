@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StickyNote, Plus, Trash2, Search, Save, X, Calendar, Hash } from 'lucide-react';
+import { StickyNote, Plus, Trash2, Search, Save, X, Calendar, Hash, Copy } from 'lucide-react';
 import { storageService } from '../../services/storageService';
 import type { MicoNote } from '../../services/storageService';
 
@@ -15,6 +15,13 @@ const NotesView: React.FC = () => {
 
     useEffect(() => {
         loadNotes();
+        // Escuchar actualizaciones globales para sincronizar múltiples vistas o carga lenta
+        window.addEventListener('mico-notes-updated', loadNotes);
+        window.addEventListener('mico-storage-ready', loadNotes);
+        return () => {
+            window.removeEventListener('mico-notes-updated', loadNotes);
+            window.removeEventListener('mico-storage-ready', loadNotes);
+        };
     }, []);
 
     const loadNotes = () => {
@@ -36,6 +43,18 @@ const NotesView: React.FC = () => {
         storageService.saveNote(noteToSave);
         setIsEditing(false);
         setCurrentNote({ title: '', content: '', category: 'General' });
+        loadNotes();
+    };
+
+    const handleDuplicate = (note: MicoNote, e: React.MouseEvent) => {
+        e.stopPropagation();
+        const duplicatedNote: MicoNote = {
+            ...note,
+            id: `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            title: `${note.title} (Copia)`,
+            date: new Date().toISOString()
+        };
+        storageService.saveNote(duplicatedNote);
         loadNotes();
     };
 
@@ -65,7 +84,10 @@ const NotesView: React.FC = () => {
                 </div>
                 {!isEditing && (
                     <button
-                        onClick={() => setIsEditing(true)}
+                        onClick={() => {
+                            setCurrentNote({ title: '', content: '', category: 'General' });
+                            setIsEditing(true);
+                        }}
                         className="px-6 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition-all shadow-lg shadow-amber-900/20 flex items-center gap-2"
                     >
                         <Plus className="w-4 h-4" /> NUEVA_NOTA
@@ -167,12 +189,22 @@ const NotesView: React.FC = () => {
                                             <div className="px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-[7px] font-bold text-amber-400 uppercase tracking-widest flex items-center gap-1">
                                                 <Hash className="w-2 h-2" /> {note.category}
                                             </div>
-                                            <button 
-                                                onClick={(e) => handleDelete(note.id, e)}
-                                                className="p-2 text-gray-700 hover:text-rose-500 transition-colors bg-white/5 rounded-lg opacity-0 group-hover:opacity-100"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
+                                            <div className="flex items-center gap-1">
+                                                <button 
+                                                    onClick={(e) => handleDuplicate(note, e)}
+                                                    className="p-2 text-gray-500 hover:text-amber-500 transition-colors bg-white/5 rounded-lg opacity-0 group-hover:opacity-100"
+                                                    title="Duplicar Nota"
+                                                >
+                                                    <Copy className="w-3.5 h-3.5" />
+                                                </button>
+                                                <button 
+                                                    onClick={(e) => handleDelete(note.id, e)}
+                                                    className="p-2 text-gray-500 hover:text-rose-500 transition-colors bg-white/5 rounded-lg opacity-0 group-hover:opacity-100"
+                                                    title="Borrar Nota"
+                                                >
+                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
                                         </div>
                                         <h4 className="text-sm font-bold text-white mb-2 truncate">{note.title}</h4>
                                         <p className="text-[10px] text-gray-500 leading-relaxed line-clamp-3 mb-4 font-sans opacity-80">

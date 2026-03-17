@@ -58,18 +58,24 @@ class PersistentStorageService {
         } as MicoSettings,
         isLoaded: false
     };
+    private initializingPromise: Promise<void> | null = null;
 
     /**
      * Inicialización asíncrona que lee el disco duro y carga el caché al arrancar.
      */
     async initialize() {
-        if (!window.electronAPI) {
-            console.warn("electronAPI no detectada. Operando en vacio o modo Web no soportado por True OS Storage.");
-            return;
-        }
+        if (this.cache.isLoaded) return;
+        if (this.initializingPromise) return this.initializingPromise;
 
-        try {
-            // 1. Cargar Configuración General y APIs
+        this.initializingPromise = (async () => {
+            if (!window.electronAPI) {
+                console.warn("electronAPI no detectada. Operando en vacio o modo Web no soportado por True OS Storage.");
+                return;
+            }
+
+            try {
+                console.log("MICO_STORAGE: Iniciando carga de datos... 📂");
+                // 1. Cargar Configuración General y APIs
             const settingsRes = await window.electronAPI.fs.readData(MODULES.CONFIG, 'settings.json');
             if (settingsRes.success && settingsRes.content) {
                 this.cache.settings = { ...this.cache.settings, ...JSON.parse(settingsRes.content) };
@@ -83,11 +89,15 @@ class PersistentStorageService {
             // 2. Cargar Agentes Personalizados
             const agentsDir = await window.electronAPI.fs.readDir(MODULES.AGENTS);
             if (agentsDir.success && agentsDir.files) {
+                this.cache.agents = []; // Limpieza atómica
                 for (const file of agentsDir.files) {
                     if (file.endsWith('.json')) {
                         const fileRes = await window.electronAPI.fs.readData(MODULES.AGENTS, file);
                         if (fileRes.success && fileRes.content) {
-                            this.cache.agents.push(JSON.parse(fileRes.content));
+                            const agent = JSON.parse(fileRes.content);
+                            if (agent && agent.id && !this.cache.agents.some(a => a.id === agent.id)) {
+                                this.cache.agents.push(agent);
+                            }
                         }
                     }
                 }
@@ -96,22 +106,31 @@ class PersistentStorageService {
             // 3. Cargar Notas
             const notesDir = await window.electronAPI.fs.readDir(MODULES.NOTES);
             if (notesDir.success && notesDir.files) {
+                this.cache.notes = [];
                 for (const file of notesDir.files) {
                     if (file.endsWith('.md')) {
                         const fileRes = await window.electronAPI.fs.readData(MODULES.NOTES, file);
                         if (fileRes.success && fileRes.content) {
                             try {
                                 const noteObj = JSON.parse(fileRes.content);
-                                // Si por algún motivo el ID no coincide con el nombre del archivo, 
-                                // priorizamos el ID del contenido para mantener consistencia
-                                this.cache.notes.push(noteObj);
+                                if (noteObj && noteObj.id && !this.cache.notes.some(n => n.id === noteObj.id)) {
+                                    this.cache.notes.push(noteObj);
+                                }
                             } catch (e) {
-                                // Fallback para archivos MD puros creados manualmente
+                                // RECUPERACIÓN INTELIGENTE: Si el JSON está mal, intentamos extraer el texto
+                                const fallbackId = file.replace('.md', '');
+                                if (this.cache.notes.some(n => n.id === fallbackId)) continue;
+                                let content = fileRes.content;
+                                // Intento de extraer campo "content" si parece un JSON roto
+                                const match = fileRes.content.match(/"content":\s*"([\s\S]*?)"/);
+                                if (match) content = match[1].replace(/\\n/g, '\n');
+
                                 this.cache.notes.push({
-                                    id: file.replace('.md', ''),
-                                    title: file.replace('.md', ''),
-                                    content: fileRes.content,
-                                    date: new Date().toISOString()
+                                    id: fallbackId,
+                                    title: "Nota_Recuperada",
+                                    content: content,
+                                    date: new Date().toISOString(),
+                                    category: 'Recuperado'
                                 });
                             }
                         }
@@ -163,6 +182,7 @@ class PersistentStorageService {
             }
 
             this.cache.isLoaded = true;
+            this.initializingPromise = null;
             console.log("True OS Storage Inicializado", this.cache);
             
             // Iniciar Motor de Tiempo Global
@@ -172,10 +192,15 @@ class PersistentStorageService {
             window.dispatchEvent(new Event('mico-storage-ready'));
             window.dispatchEvent(new Event('mico-settings-updated'));
             window.dispatchEvent(new Event('mico-configs-updated'));
+            window.dispatchEvent(new Event('mico-notes-updated'));
         } catch (error) {
             console.error("Error inicializando True OS Storage:", error);
+            this.initializingPromise = null;
         }
-    }
+    })();
+
+    return this.initializingPromise;
+}
 
     // --- Agentes ---
     getAgents(): AIAgent[] {
@@ -208,7 +233,7 @@ class PersistentStorageService {
 
     // --- APIs ---
     getConfigs(): AIConfig[] {
-        return this.cache.configs;
+        return Array.isArray(this.cache.configs) ? [...this.cache.configs] : [];
     }
 
     saveConfig(config: AIConfig) {
@@ -239,7 +264,7 @@ class PersistentStorageService {
      * Obtiene todas las notas guardadas (Caché síncrono)
      */
     getNotes(): MicoNote[] {
-        return this.cache.notes || [];
+        return Array.isArray(this.cache.notes) ? [...this.cache.notes] : [];
     }
 
     saveNote(note: MicoNote) {
@@ -248,9 +273,9 @@ class PersistentStorageService {
         else this.cache.notes.push(note);
 
         if (window.electronAPI) {
-            // Guardamos el objeto entero serializado en MD (Nota: Esto podría mejorarse usando Frontmatter en el futuro)
             window.electronAPI.fs.saveData(MODULES.NOTES, `${note.id}.md`, JSON.stringify(note, null, 2));
         }
+        window.dispatchEvent(new Event('mico-notes-updated'));
     }
 
     deleteNote(id: string) {
@@ -258,11 +283,14 @@ class PersistentStorageService {
         if (window.electronAPI) {
             window.electronAPI.fs.deleteFile(MODULES.NOTES, `${id}.md`);
         }
+        window.dispatchEvent(new Event('mico-notes-updated'));
     }
 
     // --- Configuraciones Globales ---
     getSettings(): MicoSettings {
-        return this.cache.settings;
+        // Asegurar que siempre haya un array de clocks
+        if (!this.cache.settings.clocks) this.cache.settings.clocks = [];
+        return { ...this.cache.settings, clocks: [...this.cache.settings.clocks] };
     }
 
     saveSettings(settings: Partial<MicoSettings>) {
@@ -278,67 +306,66 @@ class PersistentStorageService {
      * Se encarga de actualizar todos los relojes que estén 'isRunning'.
      */
     private startMasterMotor() {
-        console.log("MICO_MOTOR: Iniciando motor maestro...");
+        console.log("MICO_SYSTEM: Motor Maestro Iniciado. 🚀");
         setInterval(() => {
-            const now = Date.now();
-            let stateWasModified = false;
+            try {
+                const now = Date.now();
+                let stateWasModified = false;
 
-            const newClocks = this.cache.settings.clocks.map(clock => {
-                // Si está corriendo, computar delta y actualizar currentMs
-                if (clock.isRunning) {
-                    stateWasModified = true;
-                    const lastUpdate = clock.lastUpdateAt || now;
-                    const delta = now - lastUpdate;
+                if (!Array.isArray(this.cache.settings.clocks)) {
+                    this.cache.settings.clocks = [];
+                    return;
+                }
+
+                const newClocks = this.cache.settings.clocks.map(clock => {
+                    if (!clock || !clock.id) return clock;
                     
-                    // Clonar objeto para inmutabilidad reactiva
-                    const updatedClock = { ...clock, lastUpdateAt: now };
+                    if (clock.isRunning) {
+                        stateWasModified = true;
+                        const lastUpdate = clock.lastUpdateAt || now;
+                        const delta = now - lastUpdate;
+                        const updatedClock = { ...clock, lastUpdateAt: now };
 
-                    if (clock.type === 'timer') {
-                        const next = (clock.currentMs || 0) - delta;
-                        if (next <= 0) {
-                            updatedClock.currentMs = 0;
-                            updatedClock.isRunning = false;
-                            // 🚨 DISPARO: Notificar overlay y audio desde el motor
-                            window.dispatchEvent(new CustomEvent('mico-alarm-triggered', {
-                                detail: { label: clock.label, id: clock.id, alarmUrl: clock.alarmUrl }
-                            }));
-                        } else {
-                            updatedClock.currentMs = next;
+                        if (clock.type === 'timer') {
+                            const next = (clock.currentMs || 0) - delta;
+                            if (next <= 0) {
+                                updatedClock.currentMs = 0;
+                                updatedClock.isRunning = false;
+                                window.dispatchEvent(new CustomEvent('mico-alarm-triggered', {
+                                    detail: { label: clock.label, id: clock.id, alarmUrl: clock.alarmUrl }
+                                }));
+                            } else {
+                                updatedClock.currentMs = next;
+                            }
+                        } else if (clock.type === 'stopwatch') {
+                            updatedClock.currentMs = (clock.currentMs || 0) + delta;
+                        } else if (clock.type === 'alarm' && typeof clock.value === 'string') {
+                            const nowTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                            if (nowTime === clock.value) {
+                                updatedClock.isRunning = false;
+                                updatedClock.currentMs = 0;
+                                updatedClock.lastUpdateAt = now;
+                                window.dispatchEvent(new CustomEvent('mico-alarm-triggered', {
+                                    detail: { label: clock.label, id: clock.id, alarmUrl: clock.alarmUrl }
+                                }));
+                            }
                         }
-                    } else if (clock.type === 'stopwatch') {
-                        updatedClock.currentMs = (clock.currentMs || 0) + delta;
-                    } else if (clock.type === 'alarm' && typeof clock.value === 'string') {
-                        // Lógica de Alarma: Comprobar si la hora actual (HH:mm) coincide con el target
-                        const nowTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-                        if (nowTime === clock.value) {
-                            updatedClock.isRunning = false; // Se desarma
-                            updatedClock.currentMs = 0;
-                            updatedClock.lastUpdateAt = now;
-                            // 🚨 DISPARO: Notificar overlay y audio desde el motor
-                            window.dispatchEvent(new CustomEvent('mico-alarm-triggered', {
-                                detail: { label: clock.label, id: clock.id, alarmUrl: clock.alarmUrl }
-                            }));
-                        }
+                        return updatedClock;
                     }
-                    return updatedClock;
+
+                    if (clock.lastUpdateAt !== undefined) {
+                        stateWasModified = true;
+                        return { ...clock, lastUpdateAt: undefined };
+                    }
+                    return clock;
+                });
+
+                if (stateWasModified) {
+                    this.cache.settings = { ...this.cache.settings, clocks: newClocks };
+                    window.dispatchEvent(new Event('mico-settings-updated'));
                 }
-
-                // Si NO está corriendo pero aún tiene un lastUpdateAt, lo limpiamos una vez
-                if (clock.lastUpdateAt !== undefined) {
-                    stateWasModified = true;
-                    return { ...clock, lastUpdateAt: undefined };
-                }
-
-                return clock;
-            });
-
-            if (stateWasModified) {
-                // Actualizar jerarquía completa para forzar re-render de React
-                this.cache.settings = { 
-                    ...this.cache.settings, 
-                    clocks: newClocks 
-                };
-                window.dispatchEvent(new Event('mico-settings-updated'));
+            } catch (err) {
+                console.error("MICO_SYSTEM_FATAL: Error en motor maestro:", err);
             }
         }, 100); 
     }
