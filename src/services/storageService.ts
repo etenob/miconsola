@@ -102,8 +102,11 @@ class PersistentStorageService {
                         if (fileRes.success && fileRes.content) {
                             try {
                                 const noteObj = JSON.parse(fileRes.content);
+                                // Si por algún motivo el ID no coincide con el nombre del archivo, 
+                                // priorizamos el ID del contenido para mantener consistencia
                                 this.cache.notes.push(noteObj);
                             } catch (e) {
+                                // Fallback para archivos MD puros creados manualmente
                                 this.cache.notes.push({
                                     id: file.replace('.md', ''),
                                     title: file.replace('.md', ''),
@@ -233,20 +236,10 @@ class PersistentStorageService {
 
     // --- Notas ---
     /**
-     * Obtiene todas las notas guardadas
+     * Obtiene todas las notas guardadas (Caché síncrono)
      */
     getNotes(): MicoNote[] {
-        const notes = this.cache.notes || [];
-        // Saneamiento de seguridad: asegurar IDs únicos si hubo colisiones previas
-        const seen = new Set();
-        return notes.map(n => {
-            const newNote = { ...n }; // Create a new object to ensure immutability if ID is changed
-            if (seen.has(newNote.id)) {
-                newNote.id = `${newNote.id}_FIX_${Math.random().toString(36).substr(2, 5)}`;
-            }
-            seen.add(newNote.id);
-            return newNote;
-        });
+        return this.cache.notes || [];
     }
 
     saveNote(note: MicoNote) {

@@ -24,11 +24,12 @@ const NotesView: React.FC = () => {
     const handleSave = () => {
         if (!currentNote.title || !currentNote.content) return;
 
+        const isNew = !currentNote.id;
         const noteToSave: MicoNote = {
             id: currentNote.id || `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             title: currentNote.title,
             content: currentNote.content,
-            date: new Date().toLocaleDateString(),
+            date: currentNote.id ? (currentNote.date || new Date().toISOString()) : new Date().toISOString(),
             category: currentNote.category || 'General'
         };
 
@@ -40,8 +41,10 @@ const NotesView: React.FC = () => {
 
     const handleDelete = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
-        storageService.deleteNote(id);
-        loadNotes();
+        if (window.confirm("¿Seguro que quieres borrar este nodo de memoria?")) {
+            storageService.deleteNote(id);
+            loadNotes();
+        }
     };
 
     const filteredNotes = notes.filter(n => 
@@ -177,7 +180,7 @@ const NotesView: React.FC = () => {
                                         </p>
                                         <div className="flex items-center gap-2 text-[8px] text-gray-600 font-mono mt-auto pt-4 border-t border-white/5">
                                             <Calendar className="w-3 h-3" />
-                                            {note.date}
+                                            {new Date(note.date).toLocaleDateString()}
                                         </div>
                                     </div>
                                 ))
