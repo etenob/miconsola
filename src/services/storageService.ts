@@ -6,6 +6,7 @@ const MODULES = {
     NOTES: 'MisNotas',
     TASKS: 'MisTareas',
     CONFIG: 'Config',
+    CONNECTIONS: 'MisConexiones',
 };
 
 
@@ -26,8 +27,15 @@ export interface MicoClock {
     floatingPos?: { x: number, y: number };
 }
 
+export interface AIVoiceSettings {
+    autoplay: boolean;
+    voiceURI: string | null;
+    volume: number;
+}
+
 export interface MicoSettings {
     clocks: MicoClock[];
+    voiceConfigs?: AIVoiceSettings;
 }
 
 export interface MicoNote {
@@ -45,6 +53,16 @@ export interface TaskItem {
     priority: 'low' | 'medium' | 'high' | 'critical';
 }
 
+export interface DbConnectionItem {
+    id: string;
+    server: string;
+    user: string;
+    password?: string;
+    status?: 'connected' | 'error' | 'disconnected'; // Transient UI status
+    errorMsg?: string;
+    databases?: string[];
+}
+
 class PersistentStorageService {
     // Cachés en memoria para respuestas síncronas de React
     private cache = {
@@ -52,6 +70,7 @@ class PersistentStorageService {
         agents: [] as AIAgent[],
         notes: [] as MicoNote[],
         tasks: [] as TaskItem[],
+        connections: [] as DbConnectionItem[],
         settings: { 
             clocks: [
                 {
@@ -63,7 +82,12 @@ class PersistentStorageService {
                     isRunning: false,
                     currentMs: 45 * 60 * 1000
                 }
-            ]
+            ],
+            voiceConfigs: {
+                autoplay: false,
+                voiceURI: null,
+                volume: 1.0
+            }
         } as MicoSettings,
         isLoaded: false
     };
@@ -162,6 +186,27 @@ class PersistentStorageService {
                                 }
                             } catch (e) {
                                 console.error(`Error parseando tarea ${file}`, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3.6 Cargar Conexiones BBDD
+            const connDir = await window.electronAPI.fs.readDir(MODULES.CONNECTIONS);
+            if (connDir.success && connDir.files) {
+                this.cache.connections = [];
+                for (const file of connDir.files) {
+                    if (file.endsWith('.json')) {
+                        const fileRes = await window.electronAPI.fs.readData(MODULES.CONNECTIONS, file);
+                        if (fileRes.success && fileRes.content) {
+                            try {
+                                const connObj = JSON.parse(fileRes.content);
+                                if (connObj && connObj.id && !this.cache.connections.some((t: DbConnectionItem) => t.id === connObj.id)) {
+                                    this.cache.connections.push(connObj);
+                                }
+                            } catch (e) {
+                                console.error(`Error parseando conexion ${file}`, e);
                             }
                         }
                     }
@@ -341,11 +386,42 @@ class PersistentStorageService {
         window.dispatchEvent(new Event('mico-tasks-updated'));
     }
 
+    // --- Conexiones BD ---
+    getConnections(): DbConnectionItem[] {
+        return Array.isArray(this.cache.connections) ? [...this.cache.connections] : [];
+    }
+
+    saveConnection(conn: DbConnectionItem) {
+        const index = this.cache.connections.findIndex((c: DbConnectionItem) => c.id === conn.id);
+        const connectionToSave = { ...conn };
+        // Clean up transient UI state before saving
+        delete connectionToSave.status;
+        delete connectionToSave.errorMsg;
+        delete connectionToSave.databases;
+
+        if (index >= 0) this.cache.connections[index] = connectionToSave;
+        else this.cache.connections.push(connectionToSave);
+
+        if (window.electronAPI) {
+            window.electronAPI.fs.saveData(MODULES.CONNECTIONS, `${connectionToSave.id}.json`, JSON.stringify(connectionToSave, null, 2));
+        }
+        window.dispatchEvent(new Event('mico-connections-updated'));
+    }
+
+    deleteConnection(id: string) {
+        this.cache.connections = this.cache.connections.filter((c: DbConnectionItem) => c.id !== id);
+        if (window.electronAPI) {
+            window.electronAPI.fs.deleteFile(MODULES.CONNECTIONS, `${id}.json`);
+        }
+        window.dispatchEvent(new Event('mico-connections-updated'));
+    }
+
     // --- Configuraciones Globales ---
     getSettings(): MicoSettings {
         // Asegurar que siempre haya un array de clocks
         if (!this.cache.settings.clocks) this.cache.settings.clocks = [];
-        return { ...this.cache.settings, clocks: [...this.cache.settings.clocks] };
+        if (!this.cache.settings.voiceConfigs) this.cache.settings.voiceConfigs = { autoplay: false, voiceURI: null, volume: 1.0 };
+        return { ...this.cache.settings, clocks: [...this.cache.settings.clocks], voiceConfigs: { ...this.cache.settings.voiceConfigs } };
     }
 
     saveSettings(settings: Partial<MicoSettings>) {

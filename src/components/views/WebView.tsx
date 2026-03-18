@@ -70,11 +70,13 @@ const WebView: React.FC = () => {
             {/* WebView Area (Nativo de Electron) */}
             <div className="flex-1 bg-white relative overflow-hidden">
                 <webview 
-                    ref={iframeRef}
+                    ref={iframeRef as any}
                     src={url} 
                     className="w-full h-full border-none"
-                    allowpopups="true"
-                    useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    {...({ 
+                        allowpopups: "true", 
+                        useragent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" 
+                    } as any)}
                     style={{ width: '100%', height: '100%' }}
                 />
             </div>

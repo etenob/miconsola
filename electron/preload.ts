@@ -24,5 +24,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     sqlite: {
         query: (sql: string, params: any[] = []) => ipcRenderer.invoke('db:query', sql, params),
         status: () => ipcRenderer.invoke('db:status')
+    },
+    sqlserver: {
+        connect: (id: string, config: any) => ipcRenderer.invoke('sqlserver:connect', id, config),
+        query: (id: string, sql: string) => ipcRenderer.invoke('sqlserver:query', id, sql)
     }
 })

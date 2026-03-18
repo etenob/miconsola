@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import { pathToFileURL } from 'url'
 import Database from 'better-sqlite3'
+import * as sql from 'mssql'
 
 // Desactiva advertencias de seguridad en desarrollo
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true'
@@ -246,7 +247,9 @@ function registerSQLiteHandlers() {
     });
 }
 
-// --- CONFIGURACIÓN DE FILE SYSTEM (TRUE OS STORAGE) ---
+// --- CONFIGURACIÓN DE FILE SYSTEM (TRUE OS STORAGE) Y SQL SERVER (REMOTO) ---
+const sqlPools: Record<string, sql.ConnectionPool> = {};
+
 function setupIPC() {
     const baseDir = path.join(os.homedir(), 'Documents', 'Miconsola_Data');
 
@@ -313,6 +316,34 @@ function setupIPC() {
         if (result.canceled) return null;
         console.log("MICO_OS: File selected ->", result.filePaths[0]);
         return result.filePaths[0];
+    });
+
+    // --- MANEJADORES DE SQL SERVER (PRODUCCIÓN) ---
+    ipcMain.handle('sqlserver:connect', async (_, id: string, config: sql.config) => {
+        try {
+            if (sqlPools[id]) {
+                await sqlPools[id].close();
+                delete sqlPools[id];
+            }
+            console.log(`MICO_SQLSERVER: Conectando [${id}] a ${config.server}...`);
+            sqlPools[id] = await sql.connect(config);
+            return { success: true };
+        } catch (error: any) {
+            console.error(`MICO_SQLSERVER_ERROR [${id}]:`, error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('sqlserver:query', async (_, id: string, queryStr: string) => {
+        const pool = sqlPools[id];
+        if (!pool) return { success: false, error: 'No connection established for this ID' };
+        try {
+            const result = await pool.request().query(queryStr);
+            return { success: true, recordset: result.recordset };
+        } catch (error: any) {
+            console.error(`MICO_SQLSERVER_QUERY_ERROR [${id}]:`, error);
+            return { success: false, error: error.message };
+        }
     });
 }
 

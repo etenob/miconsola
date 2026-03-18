@@ -118,6 +118,49 @@ class AIService {
         }
     }
 
+    async transcribeAudio(audioBlob: Blob): Promise<string> {
+        if (!this.activeConfig) throw new Error("Sistema no configurado.");
+        const provider = this.activeConfig.provider;
+
+        if (provider === 'groq') {
+            const formData = new FormData();
+            formData.append("file", audioBlob, "audio.webm");
+            formData.append("model", "whisper-large-v3-turbo");
+            formData.append("response_format", "json");
+            
+            const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${this.activeConfig.apiKey}` },
+                body: formData
+            });
+            if (!response.ok) throw new Error("Mico_System_Error: Groq Whisper falló al procesar el audio.");
+            const data = await response.json();
+            return data.text;
+        } else if (provider === 'gemini') {
+            const buffer = await audioBlob.arrayBuffer();
+            const base64 = btoa(new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+            
+            const tempAI = new GoogleGenerativeAI(this.activeConfig.apiKey);
+            const modelToUse = this.getCurrentModel() || "gemini-1.5-flash";
+            const tempModel = tempAI.getGenerativeModel({ 
+                model: modelToUse,
+            });
+            const prompt = "Transcribe este audio EXACTAMENTE como se escucha. Si hay puro silencio o ruido, devuelve UNICAMENTE la frase [SILENCIO]. No agregues puntuación inventada, introducciones como 'Aquí está la transcripción:', ni frases por defecto. Tu única salida debe ser el texto hablado literal.";
+            
+            const inlineData = {
+                inlineData: {
+                    data: base64,
+                    mimeType: audioBlob.type || "audio/webm"
+                }
+            };
+            
+            const result = await tempModel.generateContent([prompt, inlineData]);
+            return result.response.text().trim();
+        } else {
+            throw new Error("La transcripción de voz está soportada nativamente con llaves de Groq (Whisper) o Gemini.");
+        }
+    }
+
     private async sendOpenAIMessage(text: string, provider: AIProvider): Promise<string> {
         const baseUrl = this.getProviderUrl(provider);
         // Priorizar el modelo actual seleccionado dinámicamente

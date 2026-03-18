@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Bot, Send, Zap, BrainCircuit, Plus, Trash2, Edit3, Save, X, Key, AlertCircle, Loader2, ExternalLink, RefreshCw, Compass } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Bot, Send, Zap, BrainCircuit, Plus, Trash2, Edit3, Save, X, Key, AlertCircle, Loader2, ExternalLink, RefreshCw, Compass, Mic, MicOff, Volume2, VolumeX, Play, Square, Settings } from 'lucide-react';
 import { storageService } from '../../services/storageService';
+import type { AIVoiceSettings } from '../../services/storageService';
 import { aiService } from '../../services/aiService';
 import type { AIAgent, AIConfig, AIProvider, Message } from '../../types/ai';
 import { AGENTS as BASE_AGENTS } from '../../config/agents';
@@ -30,15 +31,55 @@ const AgentsView: React.FC = () => {
     const [isTyping, setIsTyping] = useState(false);
     const [activeModel, setActiveModel] = useState<string>('');
 
+    // Voice & Audio States
+    const [voiceSettings, setVoiceSettings] = useState<AIVoiceSettings>({ autoplay: false, voiceURI: null, volume: 1.0 });
+    const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+    const [isListening, setIsListening] = useState(false);
+    const [isTranscribing, setIsTranscribing] = useState(false);
+    const [showVoiceMenu, setShowVoiceMenu] = useState(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
+
     useEffect(() => {
         loadData();
-    }, []);
+        
+        // Load System Voices
+        const loadVoices = () => {
+            const voices = window.speechSynthesis.getVoices();
+            if (voices.length > 0) {
+                setAvailableVoices(voices);
+                const defaultEs = voices.find(v => v.lang.startsWith('es')) || voices[0];
+                const finalVoiceURI = voiceSettings.voiceURI || (defaultEs ? defaultEs.voiceURI : null);
+                if (finalVoiceURI) {
+                    setVoiceSettings(prev => ({ ...prev, voiceURI: finalVoiceURI }));
+                }
+            }
+        };
+
+        loadVoices();
+        if (window.speechSynthesis.onvoiceschanged !== undefined) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
+        }
+
+        // Limpieza del MediaRecorder al desmontar
+        return () => {
+            if (mediaRecorderRef.current && isListening) {
+                mediaRecorderRef.current.stop();
+            }
+        };
+    }, [voiceSettings.voiceURI]); // Update if uninitialized
 
     const loadData = () => {
         const allAgents = storageService.getAgents();
         const allConfigs = storageService.getConfigs();
+        const settings = storageService.getSettings();
+        
         setAgents(allAgents);
         setConfigs(allConfigs);
+        if (settings.voiceConfigs) {
+            setVoiceSettings(settings.voiceConfigs);
+        }
+        
         const currentAgent = aiService.getCurrentAgent();
         setActiveAgent(currentAgent);
         setActiveModel(aiService.getCurrentModel());
@@ -107,6 +148,90 @@ const AgentsView: React.FC = () => {
         }, 5000);
     };
 
+    const handleSaveVoiceSettings = (newSettings: AIVoiceSettings) => {
+        setVoiceSettings(newSettings);
+        storageService.saveSettings({ voiceConfigs: newSettings });
+    };
+
+    const toggleListening = async () => {
+        if (isListening && mediaRecorderRef.current) {
+            mediaRecorderRef.current.stop();
+            setIsListening(false);
+            return;
+        }
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            // Determinar mejor MimeType soportado por Electron/Chromium
+            const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+            let selectedMimeType = '';
+            for (const mimeType of mimeTypes) {
+                if (MediaRecorder.isTypeSupported(mimeType)) {
+                    selectedMimeType = mimeType;
+                    break;
+                }
+            }
+
+            const mediaRecorder = new MediaRecorder(stream, selectedMimeType ? { mimeType: selectedMimeType } : undefined);
+            mediaRecorderRef.current = mediaRecorder;
+            audioChunksRef.current = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    audioChunksRef.current.push(e.data);
+                }
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunksRef.current, { type: selectedMimeType || 'audio/webm' });
+                setIsTranscribing(true);
+                stream.getTracks().forEach(track => track.stop()); // Apagar cámara/micrófono
+
+                if (audioBlob.size < 500) {
+                    console.warn("Audio demasiado corto o vacío.");
+                    setIsTranscribing(false);
+                    return;
+                }
+
+                try {
+                    const text = await aiService.transcribeAudio(audioBlob);
+                    // Proteger contra alucinaciones de modelos (ej. Gemini suele devolver un "." si solo hay silencio)
+                    if (text && !text.includes('[SILENCE]') && text.trim() !== '.') {
+                        setChatInput(prev => prev + (prev ? ' ' : '') + text);
+                    }
+                } catch (error: any) {
+                    setMessages(prev => [...prev, { role: 'model', text: `Mico_System_Error (STT): ${error.message}` }]);
+                } finally {
+                    setIsTranscribing(false);
+                }
+            };
+
+            mediaRecorder.start();
+            setIsListening(true);
+        } catch (error) {
+            console.error("Error accessing microphone:", error);
+            alert("No se pudo acceder al micrófono. Revisa los permisos o tu hardware.");
+        }
+    };
+
+    const speakText = (text: string) => {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        
+        if (voiceSettings.voiceURI) {
+            const voice = availableVoices.find(v => v.voiceURI === voiceSettings.voiceURI);
+            if (voice) utterance.voice = voice;
+        }
+        
+        utterance.volume = voiceSettings.volume;
+        window.speechSynthesis.speak(utterance);
+    };
+
+    const stopSpeaking = () => {
+        window.speechSynthesis.cancel();
+    };
+
     const handleChatSend = async (overrideText?: string) => {
         const textToSend = overrideText || chatInput;
         if (!textToSend.trim() || isTyping) return;
@@ -119,6 +244,7 @@ const AgentsView: React.FC = () => {
         try {
             const response = await aiService.sendMessage(textToSend);
             setMessages(prev => [...prev, { role: 'model', text: response }]);
+            if (voiceSettings.autoplay) speakText(response);
         } catch (error: any) {
             setMessages(prev => [...prev, { role: 'model', text: `Mico_System_Error: ${error.message}` }]);
         } finally {
@@ -327,14 +453,33 @@ const AgentsView: React.FC = () => {
                                                     >
                                                         <Edit3 className="w-2.5 h-2.5" /> EDITAR
                                                     </button>
-                                                ) : i === messages.length - 1 ? (
-                                                    <button 
-                                                        onClick={handleRegenerate}
-                                                        className="p-1 px-2 rounded-md bg-white/5 hover:bg-white/10 text-[8px] text-gray-500 hover:text-teal-400 font-mono flex items-center gap-1 border border-white/5"
-                                                    >
-                                                        <RefreshCw className="w-2.5 h-2.5" /> REGENERAR
-                                                    </button>
-                                                ) : null}
+                                                ) : (
+                                                    <div className="flex gap-2 w-full">
+                                                        <button 
+                                                            onClick={handleRegenerate}
+                                                            className="p-1.5 px-2 rounded-md bg-white/5 hover:bg-teal-500/10 text-[8px] text-gray-500 hover:text-teal-400 font-mono flex items-center gap-1 border border-white/5"
+                                                        >
+                                                            <RefreshCw className="w-2.5 h-2.5" /> REGENERAR
+                                                        </button>
+                                                        
+                                                        <div className="flex bg-white/5 rounded border border-white/5 overflow-hidden">
+                                                            <button 
+                                                                onClick={() => speakText(msg.text)}
+                                                                className="p-1.5 hover:bg-purple-500/20 text-gray-500 hover:text-purple-400 transition-colors"
+                                                                title="Reproducir Audio"
+                                                            >
+                                                                <Play className="w-3 h-3" />
+                                                            </button>
+                                                            <button 
+                                                                onClick={stopSpeaking}
+                                                                className="p-1.5 hover:bg-rose-500/20 text-gray-500 hover:text-rose-400 transition-colors border-l border-white/5"
+                                                                title="Detener Audio"
+                                                            >
+                                                                <Square className="w-3 h-3" />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -350,22 +495,88 @@ const AgentsView: React.FC = () => {
                             )}
                         </div>
 
-                        <div className="p-6 bg-black/40 border-t border-white/5">
-                            <div className="relative">
+                        <div className="p-6 bg-black/40 border-t border-white/5 relative">
+                            {showVoiceMenu && (
+                                <div className="absolute bottom-24 right-6 bg-[#0B0C10] border border-white/10 p-5 rounded-2xl w-72 shadow-[0_0_30px_rgba(0,0,0,0.8)] z-50 animate-in slide-in-from-bottom-2 fade-in">
+                                    <div className="flex items-center justify-between mb-4 border-b border-white/5 pb-3">
+                                        <div className="flex items-center gap-2">
+                                            <Settings className="w-3.5 h-3.5 text-teal-400" />
+                                            <span className="text-[10px] uppercase font-bold text-gray-300 font-mono tracking-widest">Config_Neural_Voz</span>
+                                        </div>
+                                        <button onClick={() => setShowVoiceMenu(false)} className="text-gray-500 hover:text-white"><X className="w-3 h-3" /></button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <label className="flex items-center gap-3 cursor-pointer group bg-white/5 p-3 rounded-xl border border-white/5 transition-colors hover:border-teal-500/30">
+                                            <div className="relative flex-shrink-0">
+                                                <input 
+                                                    type="checkbox" 
+                                                    checked={voiceSettings.autoplay} 
+                                                    onChange={(e) => handleSaveVoiceSettings({...voiceSettings, autoplay: e.target.checked})} 
+                                                    className="sr-only"
+                                                />
+                                                <div className={`w-8 h-4 rounded-full transition-colors ${voiceSettings.autoplay ? 'bg-teal-500' : 'bg-black border border-white/10'}`}></div>
+                                                <div className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${voiceSettings.autoplay ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                                            </div>
+                                            <span className="text-[10px] text-gray-400 group-hover:text-white transition-colors uppercase font-mono tracking-widest">Lectura Automática</span>
+                                        </label>
+                                        
+                                        <div className="space-y-2 bg-white/5 p-3 rounded-xl border border-white/5">
+                                            <span className="text-[9px] text-gray-500 uppercase font-mono tracking-tighter">Motor Operativo (Sintetizador)</span>
+                                            <select 
+                                                value={voiceSettings.voiceURI || ''}
+                                                onChange={(e) => handleSaveVoiceSettings({...voiceSettings, voiceURI: e.target.value})}
+                                                className="w-full bg-black/40 border border-white/10 rounded-lg p-2 text-[10px] text-white outline-none cursor-pointer"
+                                            >
+                                                {availableVoices.map(v => (
+                                                    <option key={v.voiceURI} value={v.voiceURI} className="bg-[#0d0f14] italic">
+                                                        {v.name.replace('Microsoft', 'MS')} ({v.lang})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            <div className="relative flex items-center bg-white/5 border border-white/10 rounded-2xl focus-within:border-purple-500/40 transition-all shadow-inner">
                                 <input
                                     type="text"
-                                    placeholder={`Ejecutar comando para ${activeAgent?.name}...`}
+                                    placeholder={isListening ? "Escuchando... Habla ahora..." : `Ejecutar comando para ${activeAgent?.name}...`}
                                     value={chatInput}
                                     onChange={e => setChatInput(e.target.value)}
                                     onKeyDown={e => e.key === 'Enter' && handleChatSend()}
-                                    className="w-full bg-white/5 border border-white/10 rounded-2xl pl-6 pr-20 py-4 text-sm text-white focus:outline-none focus:border-purple-500/40 transition-all font-mono italic"
+                                    className="w-full bg-transparent border-none px-6 py-4 text-sm text-white focus:outline-none transition-all font-mono italic flex-1 placeholder:text-gray-600"
                                 />
-                                <button 
-                                    onClick={() => handleChatSend()}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 bg-purple-600 hover:bg-purple-500 text-white p-2.5 rounded-xl transition-all shadow-lg shadow-purple-900/40"
-                                >
-                                    <Send className="w-4 h-4" />
-                                </button>
+                                
+                                <div className="pr-3 flex items-center gap-1.5 shrink-0">
+                                    <button 
+                                        onClick={() => setShowVoiceMenu(!showVoiceMenu)}
+                                        className={`p-2 rounded-xl transition-all ${voiceSettings.autoplay ? 'bg-teal-500/10 text-teal-400 border border-teal-500/20' : 'text-gray-500 hover:text-white hover:bg-white/5 border border-transparent'}`}
+                                        title="Opciones de Voz (Autoplay)"
+                                        disabled={isTranscribing}
+                                    >
+                                        {voiceSettings.autoplay ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                                    </button>
+
+                                    <button 
+                                        onClick={toggleListening}
+                                        disabled={isTranscribing}
+                                        className={`p-2 rounded-xl transition-all shadow-lg border ${isListening ? 'bg-rose-500 text-white animate-pulse border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.5)]' : (isTranscribing ? 'bg-purple-500/20 text-purple-400 cursor-not-allowed' : 'bg-black/40 hover:bg-white/10 text-gray-400 border-white/10')}`}
+                                        title={isListening ? "Detener Grabación" : "Dictar por Micrófono"}
+                                    >
+                                        {isTranscribing ? <Loader2 className="w-4 h-4 animate-spin" /> : (isListening ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />)}
+                                    </button>
+
+                                    <div className="w-[1px] h-6 bg-white/10 mx-1"></div>
+
+                                    <button 
+                                        onClick={() => handleChatSend()}
+                                        disabled={isTranscribing}
+                                        className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-2.5 rounded-xl transition-all shadow-[0_0_20px_rgba(168,85,247,0.4)] border border-purple-500/50"
+                                    >
+                                        <Send className="w-4 h-4" />
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
