@@ -13,6 +13,8 @@ const NotesView: React.FC = () => {
         category: 'General'
     });
 
+    const [showArchived, setShowArchived] = useState(false);
+
     useEffect(() => {
         loadNotes();
         // Escuchar actualizaciones globales para sincronizar múltiples vistas o carga lenta
@@ -22,10 +24,12 @@ const NotesView: React.FC = () => {
             window.removeEventListener('mico-notes-updated', loadNotes);
             window.removeEventListener('mico-storage-ready', loadNotes);
         };
-    }, []);
+    }, [showArchived]);
 
     const loadNotes = () => {
-        setNotes(storageService.getNotes());
+        const allNotes = storageService.getNotes();
+        const filtered = showArchived ? allNotes.filter(n => n.archived) : allNotes.filter(n => !n.archived);
+        setNotes(filtered);
     };
 
     const handleSave = () => {
@@ -74,25 +78,32 @@ const NotesView: React.FC = () => {
 
     return (
         <div className="flex flex-col h-full animate-in fade-in slide-in-from-right-4 duration-500">
-            <div className="flex items-center justify-between mb-8">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
                 <div>
-                    <h2 className="text-2xl font-bold text-white tracking-tighter italic flex items-center gap-3">
-                        <StickyNote className="w-8 h-8 text-amber-400" />
-                        Archivo_Notas
-                    </h2>
-                    <p className="text-xs text-gray-500 font-mono uppercase tracking-widest mt-1">Gestión de Pensamientos y Logs de Sistema</p>
+                    <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">My_Notes</h3>
+                    <p className="text-sm text-gray-500">Repositorio de conocimiento y fragmentos de código.</p>
                 </div>
-                {!isEditing && (
-                    <button
+                <div className="flex items-center gap-2">
+                    <button 
+                        onClick={() => setShowArchived(!showArchived)}
+                        className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest border transition-all ${
+                            showArchived 
+                            ? 'bg-amber-500/20 text-amber-400 border-amber-500/30 shadow-[0_0_10px_rgba(245,158,11,0.2)]' 
+                            : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10'
+                        }`}
+                    >
+                        {showArchived ? 'Viendo Archivados' : 'Ver Archivos'}
+                    </button>
+                    <button 
                         onClick={() => {
                             setCurrentNote({ title: '', content: '', category: 'General' });
                             setIsEditing(true);
                         }}
-                        className="px-6 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition-all shadow-lg shadow-amber-900/20 flex items-center gap-2"
+                        className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-xl font-bold uppercase tracking-wider text-xs transition-all flex items-center gap-2 shadow-lg shadow-purple-500/20 active:scale-95"
                     >
-                        <Plus className="w-4 h-4" /> NUEVA_NOTA
+                        <Plus className="w-4 h-4" /> Nueva Nota
                     </button>
-                )}
+                </div>
             </div>
 
             <div className="flex-1 flex flex-col gap-6 overflow-hidden">

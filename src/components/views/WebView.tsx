@@ -1,9 +1,14 @@
 import React, { useState } from 'react';
 import { Globe, ArrowLeft, ArrowRight, RotateCw, ExternalLink } from 'lucide-react';
 
-const WebView: React.FC = () => {
-    const [url, setUrl] = useState('https://www.google.com/search?igu=1');
-    const [inputUrl, setInputUrl] = useState('https://www.google.com');
+interface WebViewProps {
+    initialUrl?: string;
+}
+
+const WebView: React.FC<WebViewProps> = ({ initialUrl }) => {
+    const defaultUrl = 'https://www.google.com/search?igu=1';
+    const [url, setUrl] = useState(initialUrl || defaultUrl);
+    const [inputUrl, setInputUrl] = useState(initialUrl || 'https://www.google.com');
     const iframeRef = React.useRef<HTMLIFrameElement>(null);
 
     const handleNavigate = (e: React.FormEvent) => {

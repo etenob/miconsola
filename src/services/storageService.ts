@@ -44,6 +44,7 @@ export interface MicoNote {
     content: string;
     date: string;
     category?: string;
+    archived?: boolean;
 }
 
 export interface TaskItem {
@@ -344,6 +345,7 @@ class PersistentStorageService {
     }
 
     saveNote(note: MicoNote) {
+        console.log(`MICO_STORAGE: Guardando nota ${note.id}`, note);
         const index = this.cache.notes.findIndex(n => n.id === note.id);
         if (index >= 0) this.cache.notes[index] = note;
         else this.cache.notes.push(note);
@@ -368,6 +370,7 @@ class PersistentStorageService {
     }
 
     saveTask(task: TaskItem) {
+        console.log(`MICO_STORAGE: Guardando tarea ${task.id}`, task);
         const index = this.cache.tasks.findIndex(t => t.id === task.id);
         if (index >= 0) this.cache.tasks[index] = task;
         else this.cache.tasks.unshift(task); // Add to beginning

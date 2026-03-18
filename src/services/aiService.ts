@@ -9,6 +9,9 @@ class AIService {
     private activeConfig: AIConfig | null = null;
     private currentModel: string | null = null;
     private chatHistory: { role: string; content: string }[] = [];
+    private currentConvId: string = 'global-chat'; // ID por defecto para el chat principal
+    private notesContext: string = ''; // Caché del contexto de notas
+    private appContext: string = ''; // Tareas, Relojes, Conexiones
 
     // Gemini specifics
     private geminiChat: any = null;
@@ -57,8 +60,53 @@ class AIService {
         // Si cambiamos de modelo en Gemini, reseteamos la sesión para aplicar cambios de sistema o modelo
         if (this.activeConfig?.provider === 'gemini') {
             this.geminiChat = null;
+            this.updateAppContext();
             this.initGeminiChat();
         }
+    }
+
+    private updateAppContext() {
+        const notes = storageService.getNotes();
+        const tasks = storageService.getTasks();
+        const settings = storageService.getSettings();
+        const connections = storageService.getConnections();
+
+        let context = "\n\n=== CONTEXTO_GLOBAL_DE_MICONSOLA ===\n";
+
+        if (notes.length > 0) {
+            context += "\n[NOTAS_GUARDADAS]:\n" + notes.map(n => `- ${n.title}: ${n.content}`).join('\n') + "\n";
+        }
+
+        if (tasks.length > 0) {
+            context += "\n[TAREAS_PENDIENTES]:\n" + tasks.map(t => `- [${t.status === 'done' ? 'X' : ' '}] ${t.text} (${t.priority})`).join('\n') + "\n";
+        }
+
+        if (settings.clocks && settings.clocks.length > 0) {
+            context += "\n[RELOJES_Y_ALARMAS]:\n" + settings.clocks.map(c => `- ${c.label} (${c.type}): ${c.value} [${c.isRunning ? 'ACTIVO' : 'PAUSADO'}]`).join('\n') + "\n";
+        }
+
+        if (connections.length > 0) {
+            context += "\n[CONEXIONES_A_BASES_DE_DATOS_CONFIGURADAS]:\n" + connections.map(c => `- ${c.server} (Usuario: ${c.user})`).join('\n') + "\n";
+        }
+
+        context += "\n=== INSTRUCCIONES_DE_ACCION ===\n" +
+            "Puedes ejecutar acciones usando etiquetas especiales al FINAL de tu respuesta. REGLAS CRÍTICAS:\n" +
+            "1. MULTI-ACCION: Puedes (y debes) usar múltiples etiquetas seguidas si el usuario pide varias cosas (ej: buscar, anotar y cambiar tema en un solo paso).\n" +
+            "2. NO EJECUTES nada si estás pidiendo permiso o confirmación. Espera a que el usuario diga 'sí'.\n" +
+            "3. Navegación: [MICO_ACTION:OPEN_VIEW]{\"view\": \"projects|agents|database|notes|tasks|terminal|clocks\"}[/MICO_ACTION]\n" +
+            "   (IMPORTANTE: 'Laboratorio' o 'IA' es la vista 'agents').\n" +
+            "- Estética: [MICO_ACTION:THEME_MORPH]{\"theme\": \"original|matrix|cyberpunk|gold|neon_red\"}[/MICO_ACTION]\n" +
+            "- Tareas: [MICO_ACTION:CREATE_TASK]{\"text\": \"...\", \"priority\": \"low|medium|high|critical\"}[/MICO_ACTION]\n" +
+            "- Tareas: [MICO_ACTION:COMPLETE_TASK]{\"id\": \"...\", \"text\": \"...\"}[/MICO_ACTION]\n" +
+            "- Tareas: [MICO_ACTION:DELETE_TASK]{\"id\": \"...\", \"text\": \"...\"}[/MICO_ACTION]\n" +
+            "- Notas: [MICO_ACTION:CREATE_NOTE]{\"title\": \"...\", \"content\": \"...\", \"category\": \"...\"}[/MICO_ACTION]\n" +
+            "- Notas: [MICO_ACTION:UPDATE_NOTE]{\"id\": \"...\", \"title\": \"...\", \"category\": \"...\", \"archived\": true|false}[/MICO_ACTION]\n" +
+            "- Notas: [MICO_ACTION:DELETE_NOTE]{\"id\": \"...\", \"title\": \"...\"}[/MICO_ACTION]\n" +
+            "- Web Search (IMPERATIVO si piden buscar): [MICO_ACTION:SEARCH_WEB]{\"query\": \"...\"}[/MICO_ACTION]\n" +
+            "   (REGLA: Si lanzas esto, tu texto DEBE ser declarativo: 'Buscando...' o 'Abriendo navegador...'. NO pidas permiso si ya lo estás haciendo).\n" +
+            "- Web Browser (IMPERATIVO si piden abrir web): [MICO_ACTION:BROWSE_URL]{\"url\": \"...\"}[/MICO_ACTION]\n";
+
+        this.appContext = context;
     }
 
     getCurrentModel() {
@@ -67,10 +115,11 @@ class AIService {
 
     private initGeminiChat() {
         if (this.activeConfig?.provider === 'gemini' && this.genAI) {
+            this.updateAppContext(); // Asegurar contexto fresco
             const modelToUse = this.getCurrentModel() || "gemini-1.5-flash";
             const model = this.genAI.getGenerativeModel({
                 model: modelToUse,
-                systemInstruction: this.currentAgent.prompt
+                systemInstruction: this.currentAgent.prompt + this.appContext
             });
             this.geminiChat = model.startChat({
                 history: [],
@@ -79,33 +128,109 @@ class AIService {
         }
     }
 
-    setAgent(agentId: string) {
+    async setAgent(agentId: string) {
         const agents = storageService.getAgents();
         const agent = agents.find(a => a.id === agentId);
         if (!agent) return;
 
         this.currentAgent = agent;
-        this.chatHistory = [];
+        this.chatHistory = []; // Limpiamos buffer para recargar
         this.geminiChat = null;
 
-        // Limpiar el historial para otros proveedores también
-        this.chatHistory = [];
-
+        await this.syncHistoryFromDB();
         this.initGeminiChat();
     }
 
-    async sendMessage(text: string): Promise<string> {
+    private async syncHistoryFromDB(convId: string = 'global-chat') {
+        const history = await this.getHistory(convId);
+        this.chatHistory = history.map(h => ({
+            role: h.role === 'model' ? 'assistant' : 'user',
+            content: h.text
+        }));
+    }
+
+    async sendMessage(text: string, convId?: string): Promise<string> {
         if (!this.activeConfig) {
             throw new Error("Sistema no configurado. Asegúrate de tener una API Key activa.");
         }
 
+        const activeConvId = convId || this.currentConvId;
+
+        // Sincronizar historial si el buffer está vacío o cambió de conversación
+        if (this.chatHistory.length === 0) {
+            await this.syncHistoryFromDB(activeConvId);
+        }
+        const lowerText = text.toLowerCase();
+        let contextPrefix = "";
+        const keywords = ['nota', 'idea', 'propuesta', 'tarea', 'pendiente', 'reloj', 'alarma', 'base de datos', 'crear', 'anota', 'busca', 'search', 'web', 'url', 'google', 'navega', 'abre'];
+        
+        if (keywords.some(k => lowerText.includes(k))) {
+            this.updateAppContext();
+            if (this.appContext) {
+                contextPrefix = `[MICO_SYSTEM_CONTEXT_UPDATE: ${this.appContext}]\n\n`;
+            }
+        }
+
         const provider = this.activeConfig.provider;
 
+        // Persistir mensaje del usuario (SIN el prefijo de contexto)
+        await this.persistMessage(activeConvId, 'user', text);
+
+        let response: string;
         if (provider === 'gemini') {
-            return this.sendGeminiMessage(text);
+            if (!this.geminiChat) this.initGeminiChat();
+            // Para Gemini, el sistema ya tiene el contexto base, el prefix es solo para actualizaciones en tiempo real
+            response = await this.sendGeminiMessage(contextPrefix + text);
         } else {
-            return this.sendOpenAIMessage(text, provider);
+            response = await this.sendOpenAIMessage(text, contextPrefix, provider);
         }
+
+        // Persistir respuesta de la IA
+        await this.persistMessage(activeConvId, 'model', response);
+        this.chatHistory.push({ role: 'assistant', content: response });
+
+        // Mantener el buffer manejable (últimos 20 mensajes)
+        if (this.chatHistory.length > 20) {
+            this.chatHistory = this.chatHistory.slice(-20);
+        }
+
+        return response;
+    }
+
+    // --- SQLite Persistence Methods ---
+    async getHistory(convId: string = 'global-chat'): Promise<{ role: 'user' | 'model', text: string }[]> {
+        const response = await (window as any).electronAPI.sqlite.query(
+            'SELECT role, content as text FROM messages WHERE conv_id = ? ORDER BY timestamp ASC',
+            [convId]
+        );
+        if (response.success) {
+            return response.rows.map((r: any) => ({
+                role: r.role === 'model' ? 'model' : 'user',
+                text: r.text
+            }));
+        }
+        return [];
+    }
+
+    private async persistMessage(convId: string, role: 'user' | 'model', content: string) {
+        // Asegurar que la conversación existe (UPSERT simple)
+        await (window as any).electronAPI.sqlite.query(
+            'INSERT OR IGNORE INTO conversations (id, title) VALUES (?, ?)',
+            [convId, convId === 'global-chat' ? 'Chat Principal' : `Agente: ${this.currentAgent.name}`]
+        );
+
+        // Guardar mensaje
+        await (window as any).electronAPI.sqlite.query(
+            'INSERT INTO messages (conv_id, role, content) VALUES (?, ?, ?)',
+            [convId, role, content]
+        );
+    }
+
+    async clearHistory(convId: string = 'global-chat') {
+        await (window as any).electronAPI.sqlite.query(
+            'DELETE FROM messages WHERE conv_id = ?',
+            [convId]
+        );
     }
 
     private async sendGeminiMessage(text: string): Promise<string> {
@@ -161,27 +286,29 @@ class AIService {
         }
     }
 
-    private async sendOpenAIMessage(text: string, provider: AIProvider): Promise<string> {
+    private async sendOpenAIMessage(text: string, contextPrefix: string, provider: AIProvider): Promise<string> {
         const baseUrl = this.getProviderUrl(provider);
-        // Priorizar el modelo actual seleccionado dinámicamente
         const model = this.getCurrentModel();
 
-        // Add user message to history
-        this.chatHistory.push({ role: 'user', content: text });
+        // Solo tomamos los últimos 10 mensajes para evitar Error 413 "Request Entity Too Large"
+        const recentHistory = this.chatHistory.slice(-10);
 
         const messages = [
-            { role: 'system', content: this.currentAgent.prompt },
-            ...this.chatHistory
+            { role: 'system', content: this.currentAgent.prompt + this.appContext },
+            ...recentHistory
         ];
+
+        // Inyectar el prefijo de contexto solo en el último mensaje
+        if (contextPrefix) {
+            messages[messages.length - 1].content = contextPrefix + text;
+        }
 
         try {
             const response = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.activeConfig?.apiKey}`,
-                    'HTTP-Referer': 'https://miconsola.app',
-                    'X-Title': 'Miconsola'
+                    'Authorization': `Bearer ${this.activeConfig?.apiKey}`
                 },
                 body: JSON.stringify({
                     model: model,

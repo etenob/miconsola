@@ -61,13 +61,19 @@ const AgentsView: React.FC = () => {
             window.speechSynthesis.onvoiceschanged = loadVoices;
         }
 
-        // Limpieza del MediaRecorder al desmontar
         return () => {
             if (mediaRecorderRef.current && isListening) {
                 mediaRecorderRef.current.stop();
             }
         };
     }, [voiceSettings.voiceURI]); // Update if uninitialized
+
+    useEffect(() => {
+        const chatEnd = document.getElementById('chat-end-lab');
+        if (chatEnd) {
+            chatEnd.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages, isTyping]);
 
     const loadData = () => {
         const allAgents = storageService.getAgents();
@@ -124,13 +130,24 @@ const AgentsView: React.FC = () => {
     const handleSwitchConfig = (id: string) => {
         aiService.setConfig(id);
         const config = configs.find(c => c.id === id);
-        // Marcamos en storage solo para recordar la "preferida" en el próximo arranque, 
-        // pero aiService ya está sincronizado.
         if (config) {
             storageService.saveConfig({ ...config, isActive: true });
         }
         loadData();
     };
+
+    const loadChatHistory = async (agentId: string) => {
+        setIsTyping(true);
+        const history = await aiService.getHistory(`agent-${agentId}`);
+        setMessages(history);
+        setIsTyping(false);
+    };
+
+    useEffect(() => {
+        if (view === 'chat' && activeAgent) {
+            loadChatHistory(activeAgent.id);
+        }
+    }, [view, activeAgent?.id]);
 
 
     const handleTestApi = async (id: string, key: string, provider: AIProvider = 'gemini') => {
@@ -234,7 +251,7 @@ const AgentsView: React.FC = () => {
 
     const handleChatSend = async (overrideText?: string) => {
         const textToSend = overrideText || chatInput;
-        if (!textToSend.trim() || isTyping) return;
+        if (!textToSend.trim() || isTyping || !activeAgent) return;
         
         const userMsg = { role: 'user' as const, text: textToSend };
         setMessages(prev => [...prev, userMsg]);
@@ -242,7 +259,8 @@ const AgentsView: React.FC = () => {
         setIsTyping(true);
 
         try {
-            const response = await aiService.sendMessage(textToSend);
+            const convId = `agent-${activeAgent.id}`;
+            const response = await aiService.sendMessage(textToSend, convId);
             setMessages(prev => [...prev, { role: 'model', text: response }]);
             if (voiceSettings.autoplay) speakText(response);
         } catch (error: any) {
@@ -486,13 +504,11 @@ const AgentsView: React.FC = () => {
                                 ))
                             )}
                             {isTyping && (
-                                <div className="flex gap-4 animate-pulse">
-                                    <div className="w-8 h-8 rounded-full bg-purple-600/20 flex items-center justify-center border border-purple-500/20">
-                                        <Bot className="w-4 h-4 text-purple-400" />
-                                    </div>
-                                    <div className="bg-white/5 p-3 rounded-2xl border border-white/5 text-purple-400">...</div>
+                                <div className="flex justify-start">
+                                    <div className="bg-white/5 p-3 rounded-2xl animate-pulse text-purple-400 px-4">...</div>
                                 </div>
                             )}
+                            <div id="chat-end-lab" />
                         </div>
 
                         <div className="p-6 bg-black/40 border-t border-white/5 relative">
